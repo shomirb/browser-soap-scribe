@@ -20,13 +20,11 @@ Replace the commit SHA below with `git rev-parse HEAD` on `main` at the moment y
 
 **Tools used:** Vite, vanilla HTML/CSS/JS, `@mlc-ai/web-llm`, `@huggingface/transformers`, `coi-serviceworker` (so GitHub Pages can enable the cross-origin isolation WebLLM needs), Playwright, and Node’s test runner. Model weights download from Hugging Face at runtime. An AI coding assistant was used to write the project during the event. No sponsor API was required.
 
-**Working app:** https://shomirb.github.io/browser-soap-scribe/
-
-Local run, if the Pages deploy is unavailable: `npm ci` then `npm run dev`. No environment variables.
+**Working app:** Run locally with `npm ci` and `npm run dev`. No environment variables. The intended Pages URL is https://shomirb.github.io/browser-soap-scribe/ . It is not live yet: the Actions workflow builds and uploads the site, and the deploy step returns HTTP 404 until a person with repo admin access sets Settings → Pages → Source to GitHub Actions. The automation token used here got 403 when it tried to enable that setting.
 
 **Public repository:** https://github.com/shomirb/browser-soap-scribe
 
-**Commit SHA:** fill in from `main` at submission time.
+**Commit SHA:** Use `git rev-parse HEAD` on `main` at submission time. The deadline snapshot is the entry.
 
 **Prior-work disclosure:** None. All application code was written during this hackathon. There is no earlier submitted or awarded version. Third-party libraries and the Qwen and Llama weights are used under their own licenses and were not written for this event. Sample visits are fictional and labeled in the UI and in the files.
 

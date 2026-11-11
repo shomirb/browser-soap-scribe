@@ -4,9 +4,16 @@ A clinician can paste a visit transcript, pick a fictional sample, or dictate, a
 
 The visit text is not uploaded. There is no note API and no analytics. Model weights are downloaded once and cached in the browser.
 
-**Live app:** [https://shomirb.github.io/browser-soap-scribe/](https://shomirb.github.io/browser-soap-scribe/)
+**Intended live app:** [https://shomirb.github.io/browser-soap-scribe/](https://shomirb.github.io/browser-soap-scribe/)
 
-The page is a static site. After it loads, the draft runs on the visitor’s device. The first run downloads the model (hundreds of megabytes). Later drafts in the same browser reuse the cache.
+That URL is not serving the app yet. `.github/workflows/pages.yml` builds the site and uploads the Pages artifact (the build job, including `npm test`, succeeded on `main`). The deploy job then failed with HTTP 404: `Failed to create deployment … Ensure GitHub Pages has been enabled`. This automation token cannot turn Pages on (`POST /repos/shomirb/browser-soap-scribe/pages` returned 403, “Resource not accessible by integration”).
+
+One-time fix, then re-run **Deploy GitHub Pages**:
+
+1. Open [the Pages setting](https://github.com/shomirb/browser-soap-scribe/settings/pages).
+2. Under **Build and deployment**, set **Source** to **GitHub Actions**.
+
+Until that setting exists, run the app locally with the commands below. Once Pages is enabled, the site is static: the draft still runs on the visitor’s device. The first run downloads the model (hundreds of megabytes). Later drafts in the same browser reuse the cache.
 
 ![SOAP draft from a fictional sore-throat visit, with transcript quotes and line citations](docs/screenshots/soap-draft.png)
 
