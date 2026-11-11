@@ -1,0 +1,28 @@
+{
+  "name": "browser-soap-scribe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Privacy-first SOAP note drafts. A small language model runs entirely in the browser.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "postinstall": "node scripts/copy-coi.js",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test tests/unit/*.test.js",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@mlc-ai/web-llm": "^0.2.82",
+    "coi-serviceworker": "^0.1.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "vite": "^6.4.1"
+  }
+}

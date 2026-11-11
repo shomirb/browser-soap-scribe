@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Browser SOAP Scribe drafts a SOAP note from a synthetic visit transcript with a small language model that runs entirely in the browser."
+    />
+    <title>Browser SOAP Scribe</title>
+    <link rel="icon" href="%BASE_URL%favicon.svg" type="image/svg+xml" />
+    <script src="%BASE_URL%coi-serviceworker.js"></script>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div id="app-ready" hidden></div>
+    <p class="disclaimer" id="disclaimer" role="note">
+      <strong>Prototype.</strong> Not medical advice and not for clinical use. Do not enter real
+      patient information. Every built-in visit is fictional.
+    </p>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">S</span>
+        <div>
+          <p class="eyebrow">On-device clinical draft</p>
+          <h1>Browser SOAP Scribe</h1>
+        </div>
+      </div>
+      <button class="privacy-pill" id="privacy-pill" type="button" data-clinical="0" aria-pressed="false">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="privacy-pill-text">On-device · patient text stays here</span>
+      </button>
+    </header>
+
+    <main class="layout">
+      <section class="panel transcript-panel" aria-labelledby="transcript-heading">
+        <div class="panel-head">
+          <h2 id="transcript-heading">Visit transcript</h2>
+          <p class="hint">Paste text, pick a fictional sample, or dictate. Lines are numbered for citations.</p>
+        </div>
+        <div class="controls">
+          <label>
+            Sample
+            <select id="sample-select">
+              <option value="">Custom transcript</option>
+            </select>
+          </label>
+          <p class="sample-blurb" id="sample-blurb"></p>
+        </div>
+        <label class="stack" for="transcript">Transcript text</label>
+        <textarea id="transcript" rows="7" spellcheck="false" placeholder="Clinician: …&#10;Patient: …"></textarea>
+        <div class="row-actions">
+          <button type="button" id="dictate" class="secondary">Dictate</button>
+          <span class="interim" id="interim" aria-live="polite"></span>
+        </div>
+        <ol class="lines" id="line-list"></ol>
+      </section>
+
+      <section class="panel note-panel" aria-labelledby="note-heading">
+        <div class="panel-head note-head">
+          <div>
+            <h2 id="note-heading">SOAP draft</h2>
+            <p class="hint">Edit any section. Citation chips scroll to the transcript lines behind a statement.</p>
+          </div>
+          <span class="stamp">Not for clinical use</span>
+        </div>
+
+        <div class="model-box">
+          <div class="model-grid">
+            <label>
+              Runtime
+              <select id="runtime-select">
+                <option value="auto">Automatic</option>
+                <option value="webgpu">WebGPU · WebLLM</option>
+                <option value="wasm">CPU / WASM · transformers.js</option>
+              </select>
+            </label>
+            <label>
+              Model
+              <select id="model-select"></select>
+            </label>
+          </div>
+          <p class="hint" id="model-hint"></p>
+          <div class="progress" id="progress" hidden>
+            <div class="progress-bar" id="progress-bar"></div>
+          </div>
+          <p class="status" id="model-status" role="status">No model loaded. The first draft downloads weights into this browser.</p>
+          <p class="error" id="model-error" hidden></p>
+          <div class="row-actions">
+            <button type="button" id="draft-button">Draft SOAP note</button>
+            <button type="button" id="stop-button" class="secondary" disabled>Stop</button>
+            <button type="button" id="clear-cache" class="secondary">Clear cached model</button>
+          </div>
+        </div>
+
+        <div class="flags" id="missing-flags"></div>
+        <p class="hint" id="picker-note"></p>
+
+        <article class="note" id="note" data-state="empty">
+          <p class="empty" id="note-empty">
+            The note appears here after a draft. Subjective, objective, assessment, plan, and a short
+            patient summary stay editable.
+          </p>
+          <div id="note-body" hidden></div>
+        </article>
+
+        <div class="row-actions export-row">
+          <button type="button" id="export-md" class="secondary" disabled>Download Markdown</button>
+          <button type="button" id="export-txt" class="secondary" disabled>Download text</button>
+          <button type="button" id="copy-note" class="secondary" disabled>Copy</button>
+          <span class="interim" id="copy-status" aria-live="polite"></span>
+        </div>
+
+        <details class="fold">
+          <summary>Model output and export preview</summary>
+          <h3>Raw model text</h3>
+          <pre id="raw-output">Nothing drafted yet.</pre>
+          <h3>Markdown preview</h3>
+          <pre id="markdown-preview"></pre>
+        </details>
+      </section>
+    </main>
+
+    <section class="privacy-panel" id="privacy-panel" hidden>
+      <div class="privacy-card">
+        <div class="panel-head">
+          <h2>Nothing in the visit is uploaded</h2>
+          <button type="button" id="privacy-close" class="secondary">Close</button>
+        </div>
+        <p>
+          The draft runs in this tab. Model weights download once from Hugging Face (and, on the
+          WebGPU path, a WebLLM runtime file). The transcript, the note, and microphone audio you
+          decline to send stay on the device. This page has no note API and no analytics.
+        </p>
+        <p id="draft-requests">Requests during the latest draft: 0. Blocked or unexpected: 0.</p>
+        <ol class="verify">
+          <li>Open DevTools → Network. Select a sample. Confirm no request body contains the visit.</li>
+          <li>Draft once and let the weight files finish. That traffic is the model, not the note.</li>
+          <li>Clear the Network list, then draft again. The list should stay empty while words appear.</li>
+          <li>This log starts when the app script runs. DevTools also shows the initial HTML, CSS, and JS.</li>
+        </ol>
+        <div class="log-head">
+          <h3>Request log</h3>
+          <button type="button" id="clear-log" class="secondary">Clear log</button>
+        </div>
+        <ol class="net-log" id="privacy-log"></ol>
+      </div>
+    </section>
+
+    <dialog id="speech-dialog">
+      <h2>Dictation is optional and may leave the device</h2>
+      <p>
+        Chrome’s Web Speech API sends microphone audio to a speech service. That is separate from
+        the on-device note. Paste a transcript or pick a sample if you want this demo to stay fully local.
+      </p>
+      <form method="dialog" class="row-actions">
+        <button value="cancel" class="secondary">Keep it local</button>
+        <button value="start">Start dictation anyway</button>
+      </form>
+    </dialog>
+
+    <footer>
+      <p>
+        Built during the HackerSquad AI Remote Hackathon (Nov 2026). MIT license. Synthetic data only.
+      </p>
+    </footer>
+    <noscript>Browser SOAP Scribe needs JavaScript. The model still runs on your device; there is no server-side note API.</noscript>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
