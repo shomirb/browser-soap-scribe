@@ -5,6 +5,9 @@ import { classifyRequest } from '../../src/privacy.js';
 import {
   applySupport,
   buildSectionMessages,
+  bulletIsGrounded,
+  draftItemsFromModel,
+  firstDraftSentence,
   heuristicLines,
   parseLinePicks,
   parseModelNote,
@@ -116,12 +119,33 @@ You rolled your ankle. Use a brace and ice, and come back if walking gets worse.
   assert.match(plain, /Edited in the browser/);
 });
 
-test('section prompt asks for line numbers only', () => {
-  const messages = buildSectionMessages(parseTranscript(samples[4].text), 'subjective');
-  assert.match(messages[0].content, /line numbers/);
-  assert.match(messages[1].content, /headaches/);
-  assert.match(messages[1].content, /Line numbers:/);
+test('CPU prompt rewrites only the lines for that section', () => {
+  const messages = buildSectionMessages(parseTranscript(samples[4].text), 'subjective', { focused: true });
+  assert.match(messages[0].content, /Keep only facts from that line/);
+  assert.match(messages[1].content, /tight band/);
+  assert.match(messages[1].content, /\n-$/);
   assert.equal(messages[1].content.includes('[SYNTHETIC SAMPLE'), false);
+  assert.equal(messages[1].content.includes('Blood pressure is 122/78'), false);
+});
+
+test('first sentence of a line rewrite drops a trailing citation', () => {
+  assert.equal(
+    firstDraftSentence('Throat has been burning since Monday [3]\nThis is extra.'),
+    'Throat has been burning since Monday',
+  );
+});
+
+test('draft parser keeps a grounded bullet and replaces an invented vital', () => {
+  const lines = parseTranscript(samples[0].text);
+  const parsed = draftItemsFromModel(
+    `- Throat has been burning since Monday and it hurts to swallow [3]
+- Temperature was 118 F [10]`,
+    lines,
+  );
+  assert.equal(parsed.fromModel >= 1, true);
+  assert.match(parsed.items[0].text, /throat/i);
+  assert.equal(parsed.items.some((item) => /temperature was 118/i.test(item.text)), false);
+  assert.equal(bulletIsGrounded('Temperature was 118 F', 'temperature 100.4 Fahrenheit, blood pressure 118/74'), false);
 });
 
 test('line picks accept a short number list and reject prose or code', () => {

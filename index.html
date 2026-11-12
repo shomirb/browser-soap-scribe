@@ -66,6 +66,12 @@
         </div>
 
         <div class="model-box">
+          <p class="callout" id="runtime-note">Checking whether this browser can use WebGPU.</p>
+          <p class="callout download" id="download-notice">
+            The first draft downloads the model into this browser. WebGPU, the recommended path, uses
+            Qwen2.5 1.5B (about 1 GB). CPU / WASM, the fallback, uses Qwen2.5 0.5B (about 512 MB).
+            That download is model weights only. The transcript is not in it.
+          </p>
           <div class="model-grid">
             <label>
               Runtime
@@ -84,10 +90,18 @@
           <div class="progress" id="progress" hidden>
             <div class="progress-bar" id="progress-bar"></div>
           </div>
-          <p class="status" id="model-status" role="status">No model loaded. The first draft downloads weights into this browser.</p>
-          <p class="error" id="model-error" hidden></p>
+          <p class="status" id="model-status" role="status">No model loaded yet. Use Try fictional sample for a one-click draft.</p>
+          <div class="error" id="model-error" hidden>
+            <p id="model-error-text"></p>
+            <details>
+              <summary>Technical detail</summary>
+              <pre id="model-error-detail"></pre>
+            </details>
+            <button type="button" id="use-cpu" class="secondary" hidden>Use the CPU model instead</button>
+          </div>
           <div class="row-actions">
-            <button type="button" id="draft-button">Draft SOAP note</button>
+            <button type="button" id="try-sample">Try fictional sample</button>
+            <button type="button" id="draft-button" class="secondary">Draft SOAP note</button>
             <button type="button" id="stop-button" class="secondary" disabled>Stop</button>
             <button type="button" id="clear-cache" class="secondary">Clear cached model</button>
           </div>

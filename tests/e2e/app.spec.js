@@ -16,6 +16,9 @@ test.beforeEach(async ({ page }) => {
 test('sample transcripts, checklist, and privacy shell', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#app-ready')).toHaveAttribute('data-ready', 'yes');
+  await expect(page.locator('#download-notice')).toContainText('512 MB');
+  await expect(page.locator('#runtime-note')).toContainText('Recommended path');
+  await expect(page.locator('#try-sample')).toBeVisible();
   await expect(page.locator('#disclaimer')).toContainText('Not medical advice');
   await expect(page.locator('#disclaimer')).toContainText('not for clinical use');
   await expect(page.locator('#sample-select option')).toHaveCount(6);
@@ -56,7 +59,7 @@ test('drafts a SOAP note with the in-browser WASM model', async ({ page }) => {
   await expect(page.locator('#runtime-select')).toHaveValue('wasm');
   await page.screenshot({ path: `${shots}/ready-to-draft.png` });
 
-  await page.locator('#draft-button').click();
+  await page.locator('#try-sample').click();
   await expect(page.locator('#model-status')).toContainText(/download|loading|draft|cpu|wasm|qwen/i, {
     timeout: 30_000,
   });
@@ -81,7 +84,9 @@ test('drafts a SOAP note with the in-browser WASM model', async ({ page }) => {
   for (const section of ['subjective', 'objective', 'assessment', 'plan']) {
     await expect(page.locator(`#section-${section}`)).toBeVisible();
   }
-  await expect(page.locator('#section-subjective textarea').first()).toHaveValue(/throat/i);
+  const noteText = await page.locator('#note textarea').evaluateAll((nodes) => nodes.map((node) => node.value).join('\n'));
+  expect(noteText).toMatch(/throat/i);
+  expect(noteText).not.toMatch(/penicillin allergy|End with it|myocardial|intensive care/i);
   await expect(page.locator('#section-summary textarea')).toHaveValue(/throat|cough|rest|fluid|ibuprofen|penicillin/i);
   await expect(page.locator('#markdown-preview')).not.toContainText('function ');
   await expect(page.locator('#picker-note')).not.toHaveText('');

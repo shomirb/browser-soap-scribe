@@ -4,16 +4,9 @@ A clinician can paste a visit transcript, pick a fictional sample, or dictate, a
 
 The visit text is not uploaded. There is no note API and no analytics. Model weights are downloaded once and cached in the browser.
 
-**Intended live app:** [https://shomirb.github.io/browser-soap-scribe/](https://shomirb.github.io/browser-soap-scribe/)
+**Live app:** [https://shomirb.github.io/browser-soap-scribe/](https://shomirb.github.io/browser-soap-scribe/)
 
-That URL is not serving the app yet. `.github/workflows/pages.yml` builds the site and uploads the Pages artifact (the build job, including `npm test`, succeeded on `main`). The deploy job then failed with HTTP 404: `Failed to create deployment … Ensure GitHub Pages has been enabled`. This automation token cannot turn Pages on (`POST /repos/shomirb/browser-soap-scribe/pages` returned 403, “Resource not accessible by integration”).
-
-One-time fix, then re-run **Deploy GitHub Pages**:
-
-1. Open [the Pages setting](https://github.com/shomirb/browser-soap-scribe/settings/pages).
-2. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-
-Until that setting exists, run the app locally with the commands below. Once Pages is enabled, the site is static: the draft still runs on the visitor’s device. The first run downloads the model (hundreds of megabytes). Later drafts in the same browser reuse the cache.
+The site is static. After it loads, the draft runs on the visitor’s device. The first run downloads the model (about 1 GB on the recommended WebGPU path, about 512 MB on CPU). Later drafts in the same browser reuse the cache.
 
 ![SOAP draft from a fictional sore-throat visit, with transcript quotes and line citations](docs/screenshots/soap-draft.png)
 
@@ -31,14 +24,16 @@ This repository is a prototype for that workflow. It is not a medical device, no
 
 ## How the AI is used, and why it stays on the device
 
-The model reads the numbered transcript on the device and is asked, one SOAP section at a time, to reply with line numbers only. Those lines are quoted into the note, so a statement cannot invent a vital sign that was never said. If the small model does not return a usable line list (it often writes prose instead), the app selects quotes with keyword rules and says so on the note. A separate on-device pass writes the patient summary from those quotes. If that summary adds numbers that are not in the quotes, or drifts into a generic chatbot reply, it is replaced with a summary built only from the quotes.
+**WebGPU is the recommended path.** Automatic mode uses WebLLM with Qwen2.5 1.5B when the browser has a GPU. The page says so. That model drafts each SOAP section from the full numbered transcript. If a reply has no grounded bullet, it retries once with a stricter “one bullet per line” instruction.
+
+**CPU / WASM is the fallback** (Qwen2.5 0.5B, about 512 MB) when WebGPU is missing or the GPU load fails. That smaller model does not reliably draft from the whole visit. It rewrites one transcript line at a time: a keyword pass picks the lines for the section, a short worked example shows the bullet shape, and generation is capped at 40 tokens. A sentence is kept only when most of its words are already in that line and it does not attach a number to the wrong measurement. Otherwise the note uses the transcript line itself and the screen says so. A patient summary is kept only when it stays inside those sentences.
 
 Keeping the model in the browser is the product, not a demo trick. A cloud SOAP assistant would send the transcript to someone else’s server. Here the only network traffic the app is designed to make is the first download of model weights and runtime files.
 
 | Runtime | Engine | Default model | When it is used |
 | --- | --- | --- | --- |
-| WebGPU | [WebLLM](https://github.com/mlc-ai/web-llm) (`@mlc-ai/web-llm`) | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` | Browsers with a working WebGPU adapter. Also selectable: Qwen2.5 0.5B and Llama 3.2 1B, same family of MLC builds. |
-| CPU / WASM | [transformers.js](https://huggingface.co/docs/transformers.js) | `onnx-community/Qwen2.5-0.5B-Instruct` (8-bit ONNX, about 512 MB) | Automatic fallback, and the path used when WebGPU is missing. |
+| WebGPU (recommended) | [WebLLM](https://github.com/mlc-ai/web-llm) (`@mlc-ai/web-llm`) | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC`, about 1 GB | Browsers with a working WebGPU adapter. Also selectable: Qwen2.5 0.5B and Llama 3.2 1B, same family of MLC builds. |
+| CPU / WASM (fallback) | [transformers.js](https://huggingface.co/docs/transformers.js) | `onnx-community/Qwen2.5-0.5B-Instruct` (8-bit ONNX, about 512 MB) | No WebGPU, or the GPU model fails to load. |
 
 Qwen weights are Apache-2.0. The Llama 3.2 build may be license-gated on Hugging Face, so a cold download of that option can fail until the license is accepted there. No API key is required for the default models.
 
@@ -59,7 +54,7 @@ flowchart LR
 - The page is a static Vite app: `index.html`, CSS, and ES modules. No application server.
 - `src/llm.worker.js` loads either WebLLM or transformers.js and runs generation off the main thread.
 - `src/privacy.js` wraps `fetch`, XHR, `sendBeacon`, and `WebSocket` in the page and in the worker. A request whose URL or body contains a stretch of the transcript is blocked and counted.
-- `src/soap.js` numbers lines, flags missing allergies / medicines / vitals, parses line picks, quotes lines, and exports Markdown and plain text.
+- `src/soap.js` numbers lines, flags missing allergies / medicines / vitals, checks that a drafted sentence still matches its line, and exports Markdown and plain text.
 - WebLLM needs `SharedArrayBuffer`. Local Vite sends the COOP/COEP headers. GitHub Pages cannot, so `coi-serviceworker` (MIT) reloads the page once and adds those headers.
 - Weights are cached by the runtimes (Cache API and, for WebLLM, IndexedDB). “Clear cached model” deletes those entries.
 
@@ -81,7 +76,7 @@ npm run preview   # http://127.0.0.1:4173 with the same isolation headers
 npm run test:e2e  # headless Chrome, including a real WASM draft
 ```
 
-Pick a sample, choose **CPU / WASM** if you have no GPU, and click **Draft SOAP note**. The first draft downloads the model and shows progress. Dictation uses the browser Web Speech API and is optional: Chrome’s implementation can send microphone audio to a speech service, and the button says so before it starts.
+Click **Try fictional sample**. That loads the sore-throat visit and starts a draft. The first run shows download size and progress. If the page reports an error, the message says what to do next, including switching to the CPU model. Dictation uses the browser Web Speech API and is optional: Chrome’s implementation can send microphone audio to a speech service, and the button says so before it starts.
 
 ## Verify that the visit is not sent
 
@@ -102,9 +97,10 @@ The log labels each call it sees as a model file, an app file, an unexpected hos
 
 ## Limitations
 
-- Prototype only. Not medical advice and not for real patients. A small local model misses context, and the keyword backup is a heuristic.
-- On the 0.5B CPU model, the line-number reply often is not a bare list, so the note falls back to keyword quotes and says so. Larger WebGPU models are selectable; this project does not claim they are more accurate.
-- The patient summary is kept only when it stays inside the quoted lines. Otherwise the summary is assembled from those quotes.
+- Prototype only. Not medical advice and not for real patients. This project does not claim the drafts are accurate.
+- WebGPU was not available in the headless Chrome used to test this repo, so that path is implemented and labeled, not measured here.
+- The 0.5B CPU model often writes a sentence that is not in the line (a diagnosis, an apology, or a different disease). Those sentences are dropped and the transcript line is shown instead. The note says when that happened.
+- The patient summary is kept only when it stays inside the drafted sentences. Otherwise it is assembled from those sentences.
 - The first download is large (about 512 MB for the CPU model, about 1 GB for Qwen2.5 1.5B on WebGPU) and needs a network. After that, drafts are designed not to send the visit.
 - WebGPU needs a capable GPU and cross-origin isolation. The WASM path is slower.
 - Dictation, if you turn it on, may leave the device. The note draft does not.

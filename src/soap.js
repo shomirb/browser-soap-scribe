@@ -262,21 +262,96 @@ const PICK_FOCUS = {
   plan: 'treatment and follow-up the clinician stated',
 };
 
-export function buildSectionMessages(lines, sectionId) {
-  const section = SECTIONS.find((item) => item.id === sectionId);
-  const numbered = lines
+const DRAFT_SYSTEM = [
+  'You write one section of a prototype SOAP note.',
+  'You are not a clinician and you do not give medical advice.',
+  'Use only the numbered lines. Never invent vitals, medicines, allergies, or diagnoses. Never write code.',
+  'Reply with 1 to 3 bullets. Each bullet is one short sentence and ends with a line number in brackets.',
+  'Shape example from an unrelated note. Do not copy its facts:',
+  '- The customer said the box arrived dented. [2]',
+].join(' ');
+
+function numberedLines(lines) {
+  return lines
     .filter((line) => !line.label)
     .map((line) => `${line.n}| ${line.raw}`)
     .join('\n');
+}
+
+function linesForSection(lines, sectionId, focused) {
+  if (!focused) return lines.filter((line) => !line.label);
+  const picks = heuristicLines(sectionId, lines);
+  return picks.map((n) => lines.find((line) => line.n === n)).filter(Boolean);
+}
+
+function formatPromptLines(chosen) {
+  return chosen.map((line) => `${line.n}| ${line.raw}`).join('\n');
+}
+
+export function buildSectionMessages(lines, sectionId, options = {}) {
+  const section = SECTIONS.find((item) => item.id === sectionId);
+  const focused = options.focused !== false;
+  const chosen = linesForSection(lines, sectionId, focused);
+  const block = chosen.length ? formatPromptLines(chosen) : 'No matching lines.';
   return [
     {
       role: 'system',
       content:
-        'You only answer with transcript line numbers separated by commas. You never explain, never write code, and never add facts.',
+        'Rewrite each numbered line as one bullet for a prototype SOAP note. You are not a clinician. Keep only facts from that line. End each bullet with the same line number in brackets. Do not add sentences, diagnoses, or code.',
     },
     {
       role: 'user',
-      content: `Which lines belong in ${section.label} (${PICK_FOCUS[sectionId]})?\n\n${numbered}\n\nLine numbers:`,
+      content: `${section.label} (${PICK_FOCUS[sectionId]}).\n\n${block}\n\n-`,
+    },
+  ];
+}
+
+export function buildLineMessage(line, sectionLabel) {
+  return [
+    {
+      role: 'system',
+      content:
+        'Rewrite the transcript line as one short bullet, then stop. You are not a clinician. Use only facts from that line. End with its line number in brackets. Do not add a diagnosis or another sentence.',
+    },
+    {
+      role: 'user',
+      content: `Follow the example. Output one bullet, then stop.
+
+2| Customer: The box arrived dented on Tuesday.
+- The box arrived dented on Tuesday. [2]
+
+${sectionLabel}
+${line.n}| ${line.raw}
+-`,
+    },
+  ];
+}
+
+export function firstDraftSentence(raw) {
+  const text = String(raw || '')
+    .replace(/<\|.*?\|>/g, '')
+    .replace(/^\s*assistant\s*:\s*/i, '')
+    .trim();
+  const line = text.split('\n').map((part) => part.trim()).find(Boolean) || '';
+  const bullet = line.replace(/^[-*•]\s*/, '').replace(/\s*\[\d{1,3}\]\s*$/, '').trim();
+  const sentence = bullet.split(/(?<=[.!?])\s+/)[0]?.trim() || '';
+  return sentence.slice(0, 220);
+}
+
+export function buildRetryMessages(lines, sectionId, options = {}) {
+  const section = SECTIONS.find((item) => item.id === sectionId);
+  const focused = options.focused !== false;
+  const chosen = linesForSection(lines, sectionId, focused);
+  const block = chosen.length ? formatPromptLines(chosen) : 'No matching lines.';
+  return [
+    {
+      role: 'system',
+      content:
+        'Output one bullet per line and nothing else. Format: - <fact copied from that line> [line number]. Do not explain.',
+    },
+    {
+      role: 'user',
+      content: `${section.label}.\n\n${block}\n\n-`,
     },
   ];
 }
@@ -431,6 +506,111 @@ export function parseSectionOutput(raw) {
   return items;
 }
 
+export function looksLikeCode(value) {
+  return /```|function\s|@param|\bconst\b|\blet\b|class\s+\w+/.test(String(value || ''));
+}
+
+function numbersAreAllowed(text, source) {
+  const allowed = new Set(String(source || '').match(/\d+(?:\.\d+)?/g) || []);
+  const used = String(text || '').match(/\d+(?:\.\d+)?/g) || [];
+  return used.every((value) => allowed.has(value));
+}
+
+function nextNumberAfter(source, index) {
+  const match = String(source).slice(index, index + 32).match(/\d+(?:\.\d+)?/);
+  return match ? match[0] : null;
+}
+
+function mismatchedMeasure(text, source) {
+  const labels = [/temperature|fever/i, /heart rate|pulse/i, /oxygen|saturation|spo2/i, /respiratory rate/i];
+  for (const match of String(text).matchAll(/\d+(?:\.\d+)?/g)) {
+    const window = text.slice(Math.max(0, match.index - 28), match.index + match[0].length + 12);
+    const label = labels.find((pattern) => pattern.test(window));
+    if (!label) continue;
+    const expected = [];
+    for (const found of String(source).matchAll(new RegExp(label.source, 'ig'))) {
+      const next = nextNumberAfter(source, found.index);
+      if (next) expected.push(next);
+    }
+    if (!expected.includes(match[0])) return true;
+  }
+  return false;
+}
+
+function overlapCount(text, source) {
+  const known = new Set(tokens(source));
+  return tokens(text).filter((token) => known.has(token)).length;
+}
+
+export function bulletIsGrounded(text, source) {
+  const value = String(text || '').trim();
+  if (value.length < 8 || looksLikeCode(value)) return false;
+  if (
+    /i'm sorry|i am sorry|flu-like|as an ai|thank you for sharing|please provide more|suggest|end with|line is|cannot provide|follow the example|diagnosis|myocardial|intensive care|dented|arrived on tuesday/i.test(
+      value,
+    )
+  ) {
+    return false;
+  }
+  if (!numbersAreAllowed(value, source)) return false;
+  if (mismatchedMeasure(value, source)) return false;
+  const wanted = tokens(value);
+  const overlap = overlapCount(value, source);
+  if (wanted.length && overlap / wanted.length < 0.45) return false;
+  return overlap >= 2;
+}
+
+function looseBullets(raw) {
+  const text = String(raw || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/<\|.*?\|>/g, '')
+    .replace(/^\s*assistant\s*:\s*/i, '')
+    .trim();
+  const bullets = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.length > 240) continue;
+    const bullet = bulletText(trimmed);
+    if (bullet) bullets.push(bullet);
+    else if (/\s\[\d{1,3}\]\s*$/.test(trimmed)) bullets.push(trimmed);
+  }
+  return bullets;
+}
+
+export function draftItemsFromModel(raw, lines) {
+  if (looksLikeCode(raw)) return { items: [], fromModel: 0, replaced: 0 };
+  const parsed = looseBullets(raw)
+    .map((value) => statement(value))
+    .filter((item) => item.text && !looksLikeCode(item.text));
+  const items = [];
+  let fromModel = 0;
+  let replaced = 0;
+  for (const item of parsed) {
+    if (/^not documented\b/i.test(item.text)) {
+      items.push({ ...item, cites: [] });
+      fromModel += 1;
+      continue;
+    }
+    const cites = supportLines(item.text, item.cites, lines);
+    if (!cites.length) continue;
+    const source = cites
+      .map((n) => lines.find((line) => line.n === n)?.raw || '')
+      .join(' ');
+    if (bulletIsGrounded(item.text, source)) {
+      items.push({ ...item, cites });
+      fromModel += 1;
+    } else {
+      const quote = quotesForLines([cites[0]], lines)[0];
+      if (quote) {
+        items.push(quote);
+        replaced += 1;
+      }
+    }
+    if (items.length >= 4) break;
+  }
+  return { items, fromModel, replaced };
+}
+
 export function cleanProse(raw) {
   return parseSectionOutput(raw)
     .map((item) => item.text)
@@ -442,12 +622,15 @@ export function cleanProse(raw) {
 
 function pickerLine(picker) {
   if (picker === 'model') {
-    return '> Supporting lines were chosen by the on-device model. Statements quote the transcript.';
+    return '> Sentences were drafted on this device and overlap the cited transcript lines.';
+  }
+  if (picker === 'repaired') {
+    return '> Some sentences were replaced with transcript quotes because they added facts that were not in the visit.';
   }
   if (picker === 'mixed') {
-    return '> Some supporting lines were chosen by the model. The rest used keyword rules. Statements quote the transcript.';
+    return '> Some sections were drafted by the model. Others used keyword quotes because the model reply was not usable.';
   }
-  return '> Supporting lines used keyword rules because the model did not return line numbers. Statements quote the transcript.';
+  return '> The model did not return a usable section, so these quotes were chosen by keyword rules.';
 }
 
 function sectionBlock(title, items) {

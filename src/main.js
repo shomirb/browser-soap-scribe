@@ -5,14 +5,18 @@ import { sampleById, samples } from './samples.js';
 import {
   SECTIONS,
   applySupport,
+  buildLineMessage,
+  buildRetryMessages,
   buildSectionMessages,
+  bulletIsGrounded,
+  firstDraftSentence,
   buildSummaryMessages,
   canariesFromTranscript,
   cleanProse,
+  draftItemsFromModel,
   fallbackSummary,
   heuristicLines,
   nextStatementId,
-  parseLinePicks,
   parseTranscript,
   quotesForLines,
   scanChecklist,
@@ -37,8 +41,14 @@ const els = {
   bar: $('progress-bar'),
   status: $('model-status'),
   error: $('model-error'),
+  trySample: $('try-sample'),
   draft: $('draft-button'),
   stop: $('stop-button'),
+  useCpu: $('use-cpu'),
+  runtimeNote: $('runtime-note'),
+  downloadNotice: $('download-notice'),
+  errorText: $('model-error-text'),
+  errorDetail: $('model-error-detail'),
   clearCache: $('clear-cache'),
   flags: $('missing-flags'),
   picker: $('picker-note'),
@@ -136,16 +146,59 @@ function renderLog() {
 
 function setBusy(busy) {
   state.busy = busy;
-  els.draft.disabled = busy || !els.transcript.value.trim();
+  const empty = !els.transcript.value.trim();
+  els.draft.disabled = busy || empty;
+  els.trySample.disabled = busy;
   els.stop.disabled = !busy;
   els.runtime.disabled = busy;
   els.model.disabled = busy || els.runtime.value === 'auto';
   els.clearCache.disabled = busy;
+  els.useCpu.disabled = busy;
+}
+
+function mapError(message) {
+  const detail = String(message || 'Unknown error');
+  if (/failed to fetch|networkerror|network|load failed|net::/i.test(detail)) {
+    return {
+      text: 'The model download stopped before it finished. Check the connection and try again. The transcript was not uploaded.',
+      detail,
+      offerCpu: false,
+    };
+  }
+  if (/out of memory|device lost|webgpu|no adapter|adapter/i.test(detail)) {
+    return {
+      text: 'WebGPU could not run this model on this device. Use the CPU model instead. The transcript stayed in this tab.',
+      detail,
+      offerCpu: true,
+    };
+  }
+  if (/empty draft/i.test(detail)) {
+    return {
+      text: 'The model returned nothing usable. Try the fictional sample again. The CPU model is smaller and less reliable than the WebGPU model.',
+      detail,
+      offerCpu: state.runtime === 'webgpu',
+    };
+  }
+  return {
+    text: 'The draft did not finish. You can try again. The transcript stayed on this device.',
+    detail,
+    offerCpu: state.runtime === 'webgpu',
+  };
 }
 
 function showError(message) {
-  els.error.hidden = !message;
-  els.error.textContent = message || '';
+  if (!message) {
+    els.error.hidden = true;
+    els.errorText.textContent = '';
+    els.errorDetail.textContent = '';
+    els.useCpu.hidden = true;
+    return;
+  }
+  const mapped = mapError(message);
+  els.error.hidden = false;
+  els.errorText.textContent = mapped.text;
+  els.errorDetail.textContent = mapped.detail;
+  els.useCpu.hidden = !mapped.offerCpu;
 }
 
 function showProgress(message) {
@@ -195,8 +248,8 @@ function fillModelSelect() {
     els.model.append(option);
     els.model.disabled = true;
     els.hint.textContent = state.webgpu
-      ? 'Automatic picked WebGPU. If that load fails, the draft continues on the CPU model.'
-      : 'WebGPU is not available in this browser. Automatic uses the CPU model.';
+      ? 'Recommended. Automatic uses WebGPU (Qwen2.5 1.5B, about 1 GB). If that load fails, the draft continues on the CPU model.'
+      : 'WebGPU is not available here. Automatic uses the CPU fallback (Qwen2.5 0.5B, about 512 MB). A desktop browser with WebGPU is the recommended path.';
     return;
   }
   for (const model of models) {
@@ -384,14 +437,35 @@ function renderNote() {
 }
 
 function pickerCopy(picker) {
-  if (picker === 'model') return 'The on-device model chose these transcript lines. Each statement is a quote.';
+  if (picker === 'model') {
+    return 'Drafted on this device. Each sentence overlaps the cited transcript lines.';
+  }
+  if (picker === 'repaired') {
+    return 'Some sentences were replaced with transcript quotes because they added facts that were not in the visit.';
+  }
   if (picker === 'mixed') {
-    return 'Some sections use the model’s line numbers. The others used keyword rules. Each statement is a quote.';
+    return 'Some sections were drafted by the model. Others used keyword quotes because the model reply was not usable.';
   }
   if (picker === 'keywords') {
-    return 'The model did not return line numbers, so these quotes were chosen by keyword rules.';
+    return 'The model did not return a usable section, so these quotes were chosen by keyword rules.';
   }
   return '';
+}
+
+function sectionSource(parsed) {
+  if (!parsed.items.length) return 'keywords';
+  if (parsed.fromModel > 0 && parsed.replaced === 0) return 'model';
+  if (parsed.fromModel > 0) return 'repaired';
+  return 'keywords';
+}
+
+function combineSources(sources) {
+  if (sources.every((source) => source === 'model')) return 'model';
+  if (sources.every((source) => source === 'keywords')) return 'keywords';
+  if (sources.every((source) => source === 'repaired' || source === 'model') && sources.includes('repaired')) {
+    return 'repaired';
+  }
+  return 'mixed';
 }
 
 function noteMeta() {
@@ -465,23 +539,74 @@ async function draft() {
   let stopped = false;
   try {
     for (const section of SECTIONS) {
-      state.phaseLabel = `Choosing ${section.label} lines on this device`;
+      const focused = (plan.warm ? state.runtime : plan.runtime) === 'wasm';
+      const picks = heuristicLines(section.id, state.lines);
+      if (focused) {
+        if (!picks.length) {
+          collected[section.id] = [{ id: nextStatementId(), text: 'Not documented in the transcript.', cites: [] }];
+          sources.push('keywords');
+          continue;
+        }
+        const items = [];
+        let fromModel = 0;
+        let replaced = 0;
+        for (const n of picks) {
+          const line = state.lines.find((candidate) => candidate.n === n);
+          state.phaseLabel = `Drafting ${section.label} from line ${n}`;
+          els.status.textContent = state.phaseLabel;
+          const result = await runModel(
+            plan,
+            buildLineMessage(line, section.label),
+            plan.allowFallback,
+            40,
+          );
+          stopped = stopped || Boolean(result.stopped);
+          const sentence = firstDraftSentence(result.text);
+          if (bulletIsGrounded(sentence, line.text)) {
+            items.push({ id: nextStatementId(), text: sentence, cites: [n] });
+            fromModel += 1;
+          } else {
+            const quote = quotesForLines([n], state.lines, section.id)[0];
+            if (quote) items.push(quote);
+            replaced += 1;
+          }
+          if (stopped) break;
+        }
+        collected[section.id] = items;
+        sources.push(sectionSource({ items, fromModel, replaced }));
+        if (stopped) break;
+        continue;
+      }
+      state.phaseLabel = `Drafting ${section.label} on this device`;
       els.status.textContent = state.phaseLabel;
-      const result = await runModel(
+      let result = await runModel(
         plan,
-        buildSectionMessages(state.lines, section.id),
+        buildSectionMessages(state.lines, section.id, { focused: false }),
         plan.allowFallback,
-        40,
+        Math.min(180, sectionTokenLimit()),
       );
       stopped = stopped || Boolean(result.stopped);
-      let picks = parseLinePicks(result.text, state.lines);
-      let source = 'model';
-      if (!picks.length) {
-        picks = heuristicLines(section.id, state.lines);
-        source = 'keywords';
+      let parsed = draftItemsFromModel(result.text, state.lines);
+      if (!parsed.fromModel && !stopped) {
+        state.phaseLabel = `Retrying ${section.label} on this device`;
+        els.status.textContent = state.phaseLabel;
+        result = await runModel(
+          plan,
+          buildRetryMessages(state.lines, section.id, { focused: false }),
+          false,
+          Math.min(140, sectionTokenLimit()),
+        );
+        stopped = stopped || Boolean(result.stopped);
+        const retried = draftItemsFromModel(result.text, state.lines);
+        if (retried.fromModel || !parsed.items.length) parsed = retried;
       }
-      sources.push(source);
-      collected[section.id] = quotesForLines(picks, state.lines, section.id);
+      if (!parsed.items.length) {
+        collected[section.id] = quotesForLines(picks, state.lines, section.id);
+        sources.push(picks.length ? 'keywords' : 'keywords');
+      } else {
+        collected[section.id] = parsed.items;
+        sources.push(sectionSource(parsed));
+      }
       if (stopped) break;
     }
     const quotes = SECTIONS.flatMap((section) => collected[section.id].map((item) => item.text));
@@ -495,20 +620,19 @@ async function draft() {
     } else {
       collected.summary = fallbackSummary(collected);
     }
-    state.picker = sources.every((source) => source === 'model')
-      ? 'model'
-      : sources.every((source) => source === 'keywords')
-        ? 'keywords'
-        : 'mixed';
+    state.picker = combineSources(sources);
     const filled = SECTIONS.some((section) => collected[section.id].length) || collected.summary;
     if (!filled) throw new Error('The model returned an empty draft. Try again.');
     state.note = applySupport(collected, state.lines);
     state.edited = false;
     renderNote();
     const where = state.runtime === 'webgpu' ? 'WebGPU' : 'CPU / WASM';
+    els.downloadNotice.textContent =
+      'The model weights are cached in this browser. Another draft is designed not to download them again.';
+    const cpuNote = state.runtime === 'wasm' ? ' CPU / WASM is the fallback. WebGPU with Qwen2.5 1.5B is the recommended path when a GPU is available.' : '';
     els.status.textContent = stopped
       ? `Stopped. Partial draft is editable. Model: ${state.modelId}`
-      : `Draft ready · ${where} · ${state.modelId}. Weights stay cached in this browser.`;
+      : `Draft ready · ${where} · ${state.modelId}. Weights stay cached in this browser.${cpuNote}`;
     els.progress.hidden = false;
     els.bar.style.width = '100%';
   } catch (error) {
@@ -606,7 +730,17 @@ els.model.addEventListener('change', () => {
   const current = modelById(els.model.value);
   els.hint.textContent = current?.hint || '';
 });
+els.trySample.addEventListener('click', () => {
+  loadSample('syn-2201');
+  void draft();
+});
 els.draft.addEventListener('click', () => void draft());
+els.useCpu.addEventListener('click', () => {
+  els.runtime.value = 'wasm';
+  fillModelSelect();
+  showError('');
+  void draft();
+});
 els.stop.addEventListener('click', () => engine.interrupt());
 els.clearCache.addEventListener('click', async () => {
   setBusy(true);
@@ -670,6 +804,9 @@ if (runtimeParam === 'wasm' || runtimeParam === 'webgpu' || runtimeParam === 'au
   els.runtime.value = runtimeParam;
 }
 state.webgpu = await detectWebGPU();
+els.runtimeNote.textContent = state.webgpu
+  ? 'Recommended path: WebGPU with Qwen2.5 1.5B. This browser has WebGPU, so Automatic uses it. CPU / WASM (Qwen2.5 0.5B, about 512 MB) is the fallback if the GPU load fails.'
+  : 'Recommended path: WebGPU with Qwen2.5 1.5B in a desktop browser that has a GPU. This browser has no WebGPU, so Automatic uses the CPU / WASM fallback (Qwen2.5 0.5B, about 512 MB). The smaller model more often needs a retry or a quote fallback.';
 fillModelSelect();
 const sampleParam = params.get('sample');
 loadSample(sampleById(sampleParam) ? sampleParam : 'syn-2201');
